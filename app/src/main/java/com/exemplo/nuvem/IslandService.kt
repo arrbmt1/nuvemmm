@@ -25,11 +25,13 @@ import android.widget.TextView
 
 class IslandService : Service() {
     // ---- Ajustes rápidos (em dp) ----
-    private val larguraRepouso = 90
-    private val alturaRepouso = 26
-    private val larguraAberta = 310
-    private val alturaAberta = 60
-    private val margemTopo = 6        // distância do topo da tela
+    private val larguraRepouso = 46   // pílula parada (cobre a câmera)
+    private val alturaRepouso = 28
+    private val larguraAberta = 320
+    private val alturaAberta = 84     // mais alta: conteúdo fica abaixo da câmera
+    private val margemTopo = 0        // 0 = encostada no topo da tela
+    private val topoConteudo = 30     // espaço da câmera dentro da pílula aberta
+    private val larguraCompacta = 120 // pílula com música tocando (ondas ao lado da câmera)
     private val tempoAberta = 5000L   // ms até recolher sozinha
 
     private lateinit var wm: WindowManager
@@ -40,6 +42,10 @@ class IslandService : Service() {
     private lateinit var titulo: TextView
     private lateinit var sub: TextView
     private lateinit var botao: TextView
+    private lateinit var ondaE: OndaView
+    private lateinit var ondaD: OndaView
+    private lateinit var ondaMid: OndaView
+    private lateinit var espaco: View
 
     private val h = Handler(Looper.getMainLooper())
     private val recolher = Runnable { fechar() }
@@ -68,7 +74,9 @@ class IslandService : Service() {
             val mudou = t != tituloMidia
             ctrl = c; tituloMidia = t; artistaMidia = a; tocando = p
             botao.text = if (p) "❚❚" else "▶"
+            atualizarOndas()
             if (t.isNotEmpty() && p && mudou) abrir(t, a, true)
+            else if (!aberta) repouso()
         }
     }
 
@@ -76,9 +84,8 @@ class IslandService : Service() {
         wm = getSystemService(WindowManager::class.java)
 
         val fundo = GradientDrawable().apply {
-            setColor(Color.parseColor("#0B0D14"))
+            setColor(Color.parseColor("#000000"))
             cornerRadius = dp(40).toFloat()
-            setStroke(dp(1), Color.parseColor("#33FFFFFF"))
         }
         raiz = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -116,8 +123,16 @@ class IslandService : Service() {
                 h.removeCallbacks(recolher); h.postDelayed(recolher, tempoAberta)
             }
         }
-        raiz.addView(ponto); raiz.addView(info); raiz.addView(botao)
-        info.visibility = View.GONE; botao.visibility = View.GONE
+        ondaE = OndaView(this, 4).apply { layoutParams = LinearLayout.LayoutParams(dp(22), dp(14)); visibility = View.GONE }
+        ondaD = OndaView(this, 4).apply { layoutParams = LinearLayout.LayoutParams(dp(22), dp(14)); visibility = View.GONE }
+        ondaMid = OndaView(this, 5).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(22)).apply { marginEnd = dp(10) }
+            visibility = View.GONE
+        }
+        espaco = View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f); visibility = View.GONE }
+        raiz.addView(ondaE); raiz.addView(espaco); raiz.addView(ponto); raiz.addView(info)
+        raiz.addView(ondaMid); raiz.addView(botao); raiz.addView(ondaD)
+        info.visibility = View.GONE; botao.visibility = View.GONE; ponto.visibility = View.GONE
 
         raiz.setOnClickListener {
             if (aberta) fechar()
@@ -129,9 +144,17 @@ class IslandService : Service() {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(margemTopo) }
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = dp(margemTopo)
+            if (Build.VERSION.SDK_INT >= 30)
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            else if (Build.VERSION.SDK_INT >= 28)
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
         wm.addView(raiz, lp)
     }
 
@@ -139,6 +162,10 @@ class IslandService : Service() {
         titulo.text = t; sub.text = s
         botao.visibility = if (midia && ctrl != null) View.VISIBLE else View.GONE
         ponto.visibility = View.GONE; info.visibility = View.VISIBLE
+        raiz.setPadding(dp(14), dp(topoConteudo), dp(10), dp(8))
+        ondaE.visibility = View.GONE; ondaD.visibility = View.GONE; espaco.visibility = View.GONE
+        ondaMid.visibility = if (midia && ctrl != null) View.VISIBLE else View.GONE
+        atualizarOndas()
         aberta = true
         animar(dp(larguraAberta), dp(alturaAberta))
         h.removeCallbacks(recolher); h.postDelayed(recolher, tempoAberta)
@@ -147,8 +174,22 @@ class IslandService : Service() {
     private fun fechar() {
         h.removeCallbacks(recolher)
         aberta = false
-        info.visibility = View.GONE; botao.visibility = View.GONE; ponto.visibility = View.VISIBLE
-        animar(dp(larguraRepouso), dp(alturaRepouso))
+        info.visibility = View.GONE; botao.visibility = View.GONE; ponto.visibility = View.GONE
+        repouso()
+    }
+
+    private fun atualizarOndas() {
+        ondaE.ativa = tocando; ondaD.ativa = tocando; ondaMid.ativa = tocando
+    }
+
+    /** Pílula parada: lisa, ou com ondas dos dois lados da câmera se tiver música tocando. */
+    private fun repouso() {
+        val musica = tocando && tituloMidia.isNotEmpty()
+        val vis = if (musica) View.VISIBLE else View.GONE
+        ondaE.visibility = vis; ondaD.visibility = vis; espaco.visibility = vis
+        ondaMid.visibility = View.GONE
+        raiz.setPadding(if (musica) dp(12) else 0, 0, if (musica) dp(12) else 0, 0)
+        animar(dp(if (musica) larguraCompacta else larguraRepouso), dp(alturaRepouso))
     }
 
     private fun animar(w: Int, hh: Int) {
