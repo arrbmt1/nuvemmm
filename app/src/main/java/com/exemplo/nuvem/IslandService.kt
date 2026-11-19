@@ -25,13 +25,13 @@ import android.widget.TextView
 
 class IslandService : Service() {
     // ---- Ajustes rápidos (em dp) ----
-    private val larguraRepouso = 46   // pílula parada (cobre a câmera)
+    private val larguraRepouso = 84   // pílula parada (mais larga que a câmera)
     private val alturaRepouso = 28
     private val larguraAberta = 320
     private val alturaAberta = 84     // mais alta: conteúdo fica abaixo da câmera
     private val margemTopo = 0        // 0 = encostada no topo da tela
     private val topoConteudo = 30     // espaço da câmera dentro da pílula aberta
-    private val larguraCompacta = 120 // pílula com música tocando (ondas ao lado da câmera)
+    private val larguraCompacta = 150 // pílula com música tocando (ondas ao lado da câmera)
     private val tempoAberta = 5000L   // ms até recolher sozinha
 
     private lateinit var wm: WindowManager
@@ -48,7 +48,7 @@ class IslandService : Service() {
     private lateinit var espaco: View
 
     private val h = Handler(Looper.getMainLooper())
-    private val recolher = Runnable { fechar() }
+    private val recolher = Runnable { voltar() }
     private var aberta = false
     private var ctrl: MediaController? = null
     private var tocando = false
@@ -72,11 +72,15 @@ class IslandService : Service() {
         IslandBus.onNotificacao = { e -> abrir(e.titulo, e.texto, false) }
         IslandBus.onMidia = { t, a, p, c ->
             val mudou = t != tituloMidia
+            val comecou = p && !tocando
             ctrl = c; tituloMidia = t; artistaMidia = a; tocando = p
             botao.text = if (p) "❚❚" else "▶"
             atualizarOndas()
-            if (t.isNotEmpty() && p && mudou) abrir(t, a, true)
-            else if (!aberta) repouso()
+            when {
+                t.isNotEmpty() && p && (mudou || comecou) -> abrir(t, a, true)  // música começou: expande e fica
+                aberta && !p -> { h.removeCallbacks(recolher); h.postDelayed(recolher, tempoAberta) }
+                !aberta -> repouso()
+            }
         }
     }
 
@@ -120,7 +124,7 @@ class IslandService : Service() {
             layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
             setOnClickListener {
                 ctrl?.transportControls?.let { if (tocando) it.pause() else it.play() }
-                h.removeCallbacks(recolher); h.postDelayed(recolher, tempoAberta)
+                h.removeCallbacks(recolher)
             }
         }
         ondaE = OndaView(this, 4).apply { layoutParams = LinearLayout.LayoutParams(dp(22), dp(14)); visibility = View.GONE }
@@ -168,7 +172,13 @@ class IslandService : Service() {
         atualizarOndas()
         aberta = true
         animar(dp(larguraAberta), dp(alturaAberta))
-        h.removeCallbacks(recolher); h.postDelayed(recolher, tempoAberta)
+        h.removeCallbacks(recolher)
+        if (!(midia && tocando)) h.postDelayed(recolher, tempoAberta)  // com música tocando, fica aberta
+    }
+
+    /** Depois de uma notificação: volta para a música (se tocando) ou recolhe. */
+    private fun voltar() {
+        if (tocando && tituloMidia.isNotEmpty()) abrir(tituloMidia, artistaMidia, true) else fechar()
     }
 
     private fun fechar() {
