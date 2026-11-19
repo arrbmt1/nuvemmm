@@ -27,7 +27,6 @@ class IslandService : Service() {
     // ---- Ajustes rápidos (em dp) ----
     private val larguraRepouso = 84   // pílula parada (mais larga que a câmera)
     private val alturaRepouso = 28
-    private val larguraAberta = 320
     private val alturaAberta = 84     // mais alta: conteúdo fica abaixo da câmera
     private val margemTopo = 0        // 0 = encostada no topo da tela
     private val topoConteudo = 30     // espaço da câmera dentro da pílula aberta
@@ -42,6 +41,8 @@ class IslandService : Service() {
     private lateinit var titulo: TextView
     private lateinit var sub: TextView
     private lateinit var botao: TextView
+    private lateinit var fundo: GradientDrawable
+    private var raioTopo = 0f
     private lateinit var ondaE: OndaView
     private lateinit var ondaD: OndaView
     private lateinit var ondaMid: OndaView
@@ -69,7 +70,10 @@ class IslandService : Service() {
 
         montarView()
 
-        IslandBus.onNotificacao = { e -> abrir(e.titulo, e.texto, false) }
+        IslandBus.onNotificacao = { e ->
+            // ignora a notificação do próprio player (mesmo título da música)
+            if (!(tituloMidia.isNotEmpty() && e.titulo == tituloMidia)) abrir(e.titulo, e.texto, false)
+        }
         IslandBus.onMidia = { t, a, p, c ->
             val mudou = t != tituloMidia
             val comecou = p && !tocando
@@ -87,7 +91,8 @@ class IslandService : Service() {
     private fun montarView() {
         wm = getSystemService(WindowManager::class.java)
 
-        val fundo = GradientDrawable().apply {
+        raioTopo = dp(40).toFloat()
+        fundo = GradientDrawable().apply {
             setColor(Color.parseColor("#000000"))
             cornerRadius = dp(40).toFloat()
         }
@@ -166,12 +171,12 @@ class IslandService : Service() {
         titulo.text = t; sub.text = s
         botao.visibility = if (midia && ctrl != null) View.VISIBLE else View.GONE
         ponto.visibility = View.GONE; info.visibility = View.VISIBLE
-        raiz.setPadding(dp(14), dp(topoConteudo), dp(10), dp(8))
+        raiz.setPadding(dp(20), dp(topoConteudo), dp(16), dp(8))
         ondaE.visibility = View.GONE; ondaD.visibility = View.GONE; espaco.visibility = View.GONE
         ondaMid.visibility = if (midia && ctrl != null) View.VISIBLE else View.GONE
         atualizarOndas()
         aberta = true
-        animar(dp(larguraAberta), dp(alturaAberta))
+        animar(resources.displayMetrics.widthPixels, dp(alturaAberta), true)  // largura total da tela
         h.removeCallbacks(recolher)
         if (!(midia && tocando)) h.postDelayed(recolher, tempoAberta)  // com música tocando, fica aberta
     }
@@ -202,8 +207,11 @@ class IslandService : Service() {
         animar(dp(if (musica) larguraCompacta else larguraRepouso), dp(alturaRepouso))
     }
 
-    private fun animar(w: Int, hh: Int) {
+    private fun animar(w: Int, hh: Int, cheia: Boolean = false) {
         val w0 = lp.width; val h0 = lp.height
+        val r0 = raioTopo
+        val r1 = if (cheia) 0f else dp(40).toFloat()   // aberta: topo reto, cobre a barra de status
+        val rb = dp(40).toFloat()
         ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 450
             interpolator = OvershootInterpolator(1.1f)
@@ -211,6 +219,8 @@ class IslandService : Service() {
                 val f = it.animatedValue as Float
                 lp.width = (w0 + (w - w0) * f).toInt()
                 lp.height = (h0 + (hh - h0) * f).toInt()
+                raioTopo = (r0 + (r1 - r0) * f).coerceAtLeast(0f)
+                fundo.cornerRadii = floatArrayOf(raioTopo, raioTopo, raioTopo, raioTopo, rb, rb, rb, rb)
                 if (raiz.isAttachedToWindow) wm.updateViewLayout(raiz, lp)
             }
             start()
