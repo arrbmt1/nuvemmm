@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -24,14 +25,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 class IslandService : Service() {
-    // ---- Ajustes rápidos (em dp) ----
-    private val larguraRepouso = 84   // pílula parada (mais larga que a câmera)
-    private val alturaRepouso = 28
-    private val alturaAberta = 84     // mais alta: conteúdo fica abaixo da câmera
-    private val margemTopo = 0        // 0 = encostada no topo da tela
-    private val topoConteudo = 30     // espaço da câmera dentro da pílula aberta
-    private val larguraCompacta = 150 // pílula com música tocando (ondas ao lado da câmera)
-    private val tempoAberta = 5000L   // ms até recolher sozinha
+    companion object {
+        @Volatile var rodando = false
+    }
 
     private lateinit var wm: WindowManager
     private lateinit var raiz: LinearLayout
@@ -51,15 +47,21 @@ class IslandService : Service() {
     private val h = Handler(Looper.getMainLooper())
     private val recolher = Runnable { voltar() }
     private var aberta = false
+    private var abertaMidia = false
     private var ctrl: MediaController? = null
     private var tocando = false
     private var tituloMidia = ""
     private var artistaMidia = ""
+    private var anim: ValueAnimator? = null
+    private val ouvinte = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> aplicarConfig() }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun c(k: String) = Cfg.get(this, k)
+    private fun tempoAberta() = c("tempoAberta") * 1000L
 
     override fun onCreate() {
         super.onCreate()
+        rodando = true
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("nuvem", "Nuvem", NotificationManager.IMPORTANCE_MIN))
         val n = Notification.Builder(this, "nuvem")
@@ -69,21 +71,25 @@ class IslandService : Service() {
         else startForeground(1, n)
 
         montarView()
+        aplicarConfig()
+        Cfg.sp(this).registerOnSharedPreferenceChangeListener(ouvinte)
 
         IslandBus.onNotificacao = { e ->
             // ignora a notificação do próprio player (mesmo título da música)
-            if (!(tituloMidia.isNotEmpty() && e.titulo == tituloMidia)) abrir(e.titulo, e.texto, false)
+            if (c("notificacoes") == 1 && !(tituloMidia.isNotEmpty() && e.titulo == tituloMidia))
+                abrir(e.titulo, e.texto, false)
         }
-        IslandBus.onMidia = { t, a, p, c ->
+        IslandBus.onMidia = { t, a, p, ctl ->
             val mudou = t != tituloMidia
             val comecou = p && !tocando
-            ctrl = c; tituloMidia = t; artistaMidia = a; tocando = p
+            ctrl = ctl; tituloMidia = t; artistaMidia = a; tocando = p
             botao.text = if (p) "❚❚" else "▶"
             atualizarOndas()
             when {
                 t.isNotEmpty() && p && (mudou || comecou) -> abrir(t, a, true)  // música começou: expande e fica
-                aberta && !p -> { h.removeCallbacks(recolher); h.postDelayed(recolher, tempoAberta) }
+                aberta && !p -> { h.removeCallbacks(recolher); h.postDelayed(recolher, tempoAberta()) }
                 !aberta -> repouso()
+                else -> {}
             }
         }
     }
@@ -100,7 +106,6 @@ class IslandService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             background = fundo
-            setPadding(dp(14), 0, dp(10), 0)
             clipToOutline = true
         }
 
@@ -149,7 +154,7 @@ class IslandService : Service() {
         }
 
         lp = WindowManager.LayoutParams(
-            dp(larguraRepouso), dp(alturaRepouso),
+            dp(c("larguraRepouso")), dp(c("alturaRepouso")),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -158,7 +163,7 @@ class IslandService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(margemTopo)
+            y = dp(c("margemTopo"))
             if (Build.VERSION.SDK_INT >= 30)
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             else if (Build.VERSION.SDK_INT >= 28)
@@ -167,18 +172,45 @@ class IslandService : Service() {
         wm.addView(raiz, lp)
     }
 
+    /** Aplica na hora o que foi mexido na tela de ajustes. */
+    private fun aplicarConfig() {
+        if (!::raiz.isInitialized) return
+        val corP = Cfg.CORES_PILULA[c("corPilula").coerceIn(0, Cfg.CORES_PILULA.size - 1)].second
+        fundo.setColor(Color.parseColor(corP))
+        val tema = Cfg.TEMAS[c("temaOnda").coerceIn(0, Cfg.TEMAS.size - 1)]
+        val ca = Color.parseColor(tema.second)
+        val cb = Color.parseColor(tema.third)
+        ondaE.cores(ca, cb); ondaD.cores(ca, cb); ondaMid.cores(ca, cb)
+
+        anim?.cancel()
+        lp.y = dp(c("margemTopo"))
+        if (aberta) {
+            botao.visibility = if (abertaMidia && ctrl != null && c("controles") == 1) View.VISIBLE else View.GONE
+            ondaMid.visibility = if (abertaMidia && c("onda") == 1) View.VISIBLE else View.GONE
+            raiz.setPadding(dp(20), dp(c("topoConteudo")), dp(16), dp(8))
+            lp.width = resources.displayMetrics.widthPixels
+            lp.height = dp(c("alturaAberta"))
+            raioTopo = 0f
+            aplicarRaio()
+        } else {
+            repouso(false)
+        }
+        if (raiz.isAttachedToWindow) wm.updateViewLayout(raiz, lp)
+    }
+
     private fun abrir(t: String, s: String, midia: Boolean) {
         titulo.text = t; sub.text = s
-        botao.visibility = if (midia && ctrl != null) View.VISIBLE else View.GONE
+        abertaMidia = midia
+        botao.visibility = if (midia && ctrl != null && c("controles") == 1) View.VISIBLE else View.GONE
         ponto.visibility = View.GONE; info.visibility = View.VISIBLE
-        raiz.setPadding(dp(20), dp(topoConteudo), dp(16), dp(8))
+        raiz.setPadding(dp(20), dp(c("topoConteudo")), dp(16), dp(8))
         ondaE.visibility = View.GONE; ondaD.visibility = View.GONE; espaco.visibility = View.GONE
-        ondaMid.visibility = if (midia && ctrl != null) View.VISIBLE else View.GONE
+        ondaMid.visibility = if (midia && c("onda") == 1) View.VISIBLE else View.GONE
         atualizarOndas()
         aberta = true
-        animar(resources.displayMetrics.widthPixels, dp(alturaAberta), true)  // largura total da tela
+        animar(resources.displayMetrics.widthPixels, dp(c("alturaAberta")), true)  // largura total da tela
         h.removeCallbacks(recolher)
-        if (!(midia && tocando)) h.postDelayed(recolher, tempoAberta)  // com música tocando, fica aberta
+        if (!(midia && tocando)) h.postDelayed(recolher, tempoAberta())  // com música tocando, fica aberta
     }
 
     /** Depois de uma notificação: volta para a música (se tocando) ou recolhe. */
@@ -198,21 +230,33 @@ class IslandService : Service() {
     }
 
     /** Pílula parada: lisa, ou com ondas dos dois lados da câmera se tiver música tocando. */
-    private fun repouso() {
-        val musica = tocando && tituloMidia.isNotEmpty()
+    private fun repouso(animado: Boolean = true) {
+        val musica = tocando && tituloMidia.isNotEmpty() && c("onda") == 1
         val vis = if (musica) View.VISIBLE else View.GONE
         ondaE.visibility = vis; ondaD.visibility = vis; espaco.visibility = vis
         ondaMid.visibility = View.GONE
         raiz.setPadding(if (musica) dp(12) else 0, 0, if (musica) dp(12) else 0, 0)
-        animar(dp(if (musica) larguraCompacta else larguraRepouso), dp(alturaRepouso))
+        val w = dp(c(if (musica) "larguraCompacta" else "larguraRepouso"))
+        val hh = dp(c("alturaRepouso"))
+        if (animado) animar(w, hh)
+        else {
+            lp.width = w; lp.height = hh
+            raioTopo = dp(40).toFloat()
+            aplicarRaio()
+        }
+    }
+
+    private fun aplicarRaio() {
+        val rb = dp(40).toFloat()
+        fundo.cornerRadii = floatArrayOf(raioTopo, raioTopo, raioTopo, raioTopo, rb, rb, rb, rb)
     }
 
     private fun animar(w: Int, hh: Int, cheia: Boolean = false) {
+        anim?.cancel()
         val w0 = lp.width; val h0 = lp.height
         val r0 = raioTopo
         val r1 = if (cheia) 0f else dp(40).toFloat()   // aberta: topo reto, cobre a barra de status
-        val rb = dp(40).toFloat()
-        ValueAnimator.ofFloat(0f, 1f).apply {
+        anim = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 450
             interpolator = OvershootInterpolator(1.1f)
             addUpdateListener {
@@ -220,7 +264,7 @@ class IslandService : Service() {
                 lp.width = (w0 + (w - w0) * f).toInt()
                 lp.height = (h0 + (hh - h0) * f).toInt()
                 raioTopo = (r0 + (r1 - r0) * f).coerceAtLeast(0f)
-                fundo.cornerRadii = floatArrayOf(raioTopo, raioTopo, raioTopo, raioTopo, rb, rb, rb, rb)
+                aplicarRaio()
                 if (raiz.isAttachedToWindow) wm.updateViewLayout(raiz, lp)
             }
             start()
@@ -231,7 +275,10 @@ class IslandService : Service() {
     override fun onBind(i: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        rodando = false
+        Cfg.sp(this).unregisterOnSharedPreferenceChangeListener(ouvinte)
         IslandBus.onNotificacao = null; IslandBus.onMidia = null
+        anim?.cancel()
         h.removeCallbacksAndMessages(null)
         if (raiz.isAttachedToWindow) wm.removeView(raiz)
         super.onDestroy()
