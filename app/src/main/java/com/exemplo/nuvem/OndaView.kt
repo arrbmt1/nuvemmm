@@ -16,12 +16,24 @@ class OndaView(ctx: Context, private val barras: Int) : View(ctx) {
     var ativa = false
         set(v) { field = v; invalidate() }
 
+    private var c1 = Color.parseColor("#38E0C0")
+    private var c2 = Color.parseColor("#8B7BFF")
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val r = RectF()
 
+    fun cores(a: Int, b: Int) {
+        c1 = a; c2 = b
+        montarShader()
+        invalidate()
+    }
+
+    private fun montarShader() {
+        if (width > 0) p.shader = LinearGradient(0f, 0f, width.toFloat(), 0f, c1, c2, Shader.TileMode.CLAMP)
+    }
+
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
-        p.shader = LinearGradient(0f, 0f, w.toFloat(), 0f,
-            Color.parseColor("#38E0C0"), Color.parseColor("#8B7BFF"), Shader.TileMode.CLAMP)
+        super.onSizeChanged(w, h, ow, oh)
+        montarShader()
     }
 
     override fun onDraw(canvas: Canvas) {
